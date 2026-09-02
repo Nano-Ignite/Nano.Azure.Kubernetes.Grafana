@@ -108,10 +108,10 @@ extraSecretMounts:
     secretName: grafana-sql-auth
     mountPath: /etc/sql/auth
     readOnly: true
-  - name: smtp-auth
-    secretName: resend-auth
-    mountPath: /etc/smtp/auth
-    readOnly: true
+  # - name: smtp-auth
+  #   secretName: resend-auth
+  #   mountPath: /etc/smtp/auth
+  #   readOnly: true
 
 grafana.ini:
   server:
