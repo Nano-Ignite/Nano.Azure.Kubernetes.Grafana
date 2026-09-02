@@ -131,6 +131,7 @@ jobs:
 
           "SELECT 'CREATE DATABASE $env:SQL_NAME' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$env:SQL_NAME')\gexec" | psql -d postgres;
           psql -d postgres -c "ALTER DATABASE $env:SQL_NAME OWNER TO ""$env:SQL_USER"";";
+          psql -d $env:SQL_NAME -c "ALTER SCHEMA public OWNER TO ""$env:SQL_USER"";";
 
           echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
           echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
