@@ -204,16 +204,6 @@ jobs:
       - name: Deploy Grafana
         shell: pwsh
         run: |
-          $zoneNames = az network dns zone list -g $env:AZURE_GROUP_DNS --query "[].name" -o json | ConvertFrom-Json;
-
-          $env:ROUTE_HOST_NAMES = (
-              $zoneNames | ForEach-Object {
-                  "  - $env:SUB_DOMAIN_NAME.$_"
-              }
-          ) -join "`n";
-
-          $env:GATEWAY_NAME = kubectl get gateway -n $env:KUBERNETES_NAMESPACE -o jsonpath='{.items[0].metadata.name}';
-
           Get-Content .kubernetes/grafana-sql-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-sql-auth-secret.tmp.yaml;
           kubectl apply -f .kubernetes/grafana-sql-auth-secret.tmp.yaml;
           if ($LastExitCode -ne 0) 
