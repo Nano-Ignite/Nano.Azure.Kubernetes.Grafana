@@ -124,6 +124,7 @@ jobs:
                    END IF;
                 END
                 `$do`$;
+                ALTER ROLE "$env:SQL_USER" WITH PASSWORD '$env:SQL_PASSWORD';
           "@;
 
               psql -d postgres -c $roleSql;
