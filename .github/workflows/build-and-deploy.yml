@@ -27,7 +27,7 @@ env:
   KUBERNETES_CPU_LIMIT: 300m
   GRAFANA_ADMIN_USERNAME: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_USERNAME || secrets.STAGING_GRAFANA_ADMIN_USERNAME }}
   GRAFANA_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_PASSWORD || secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
-  SQL_TYPE: mysql
+  SQL_TYPE: sqlserver
   SQL_NAME: grafana
   SQL_USER: grafana-user
   SUB_DOMAIN_NAME: grafana
@@ -224,27 +224,6 @@ jobs:
 
           Get-Content .kubernetes/grafana-values.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-values.tmp.yaml;
           helm upgrade --install $env:APP_NAME oci://ghcr.io/grafana-community/helm-charts/grafana --namespace $env:KUBERNETES_NAMESPACE --version $env:CHART_VERSION -f .kubernetes/grafana-values.tmp.yaml;
-          if ($LastExitCode -ne 0) 
-          { 
-              throw "error";
-          }
-
-          Get-Content .kubernetes/grafana-httproute-80.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-httproute-80.tmp.yaml;
-          kubectl apply -f .kubernetes/grafana-httproute-80.tmp.yaml;
-          if ($LastExitCode -ne 0) 
-          { 
-              throw "error";
-          }
-
-          Get-Content .kubernetes/grafana-httproute-443.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-httproute-443.tmp.yaml;
-          kubectl apply -f .kubernetes/grafana-httproute-443.tmp.yaml;
-          if ($LastExitCode -ne 0) 
-          { 
-              throw "error";
-          }
-
-          Get-Content .kubernetes/grafana-service-monitor.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-service-monitor.tmp.yaml;
-          kubectl apply -f .kubernetes/grafana-service-monitor.tmp.yaml;
           if ($LastExitCode -ne 0) 
           { 
               throw "error";
