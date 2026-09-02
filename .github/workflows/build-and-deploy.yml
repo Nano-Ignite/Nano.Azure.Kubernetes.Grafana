@@ -142,9 +142,9 @@ jobs:
         if: env.SQL_TYPE == 'sqlserver'
         shell: pwsh
         run: |
-          $env:SQL_HOST = "$env:APP_NAME.database.windows.net";
+          $env:SQL_HOST = az sql server list -g $env:AZURE_GROUP_DATABASE --query [0].fullyQualifiedDomainName -o tsv;
+          $env:SQL_SERVER = az sql server list -g $env:AZURE_GROUP_DATABASE --query [0].name -o tsv;
           $env:SQL_PORT = "1433";
-          $env:SQL_ADMIN_USER = az sql server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:APP_NAME --query "[0].login" -o tsv;
           $env:SQL_TOKEN = az account get-access-token --resource "https://database.windows.net/" --query accessToken -o tsv;
 
           $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
@@ -162,8 +162,6 @@ jobs:
 
           echo "::add-mask::$env:SQL_PASSWORD";
 
-          Install-Module -Name SqlServer -Scope CurrentUser -Force -AllowClobber;
-
           $masterSql = @"
             IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = '$env:SQL_USER')
             BEGIN
@@ -177,7 +175,11 @@ jobs:
             END
           "@;
 
-          Invoke-Sqlcmd -ServerInstance $env:SQL_HOST -Database "master" -AccessToken $env:SQL_TOKEN -Query $masterSql;
+          Invoke-Sqlcmd `
+              -ServerInstance $env:SQL_HOST `
+              -Database "master" `
+              -AccessToken $env:SQL_TOKEN `
+              -Query $masterSql;
 
           $dbSql = @"
             IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$env:SQL_USER')
@@ -189,7 +191,11 @@ jobs:
             ALTER ROLE db_ddladmin ADD MEMBER [$env:SQL_USER];
           "@;
 
-          Invoke-Sqlcmd -ServerInstance $env:SQL_HOST -Database $env:SQL_NAME -AccessToken $env:SQL_TOKEN -Query $dbSql;
+          Invoke-Sqlcmd `
+              -ServerInstance $env:SQL_HOST `
+              -Database $env:SQL_NAME `
+              -AccessToken $env:SQL_TOKEN `
+              -Query $dbSql;
 
           echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
           echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
