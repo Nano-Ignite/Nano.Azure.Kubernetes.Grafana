@@ -156,7 +156,7 @@ jobs:
           }
           else
           {
-              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.SQL_PASSWORD}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
+              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.password}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
               $syncStatement = "";
           }
 
@@ -169,7 +169,7 @@ jobs:
             END
             $syncStatement
 
-            IF DB_ID('$env:SQL_NAME') IS NULL
+            IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = '$env:SQL_NAME')
             BEGIN
                 CREATE DATABASE [$env:SQL_NAME];
             END
@@ -204,11 +204,16 @@ jobs:
       - name: Deploy Grafana
         shell: pwsh
         run: |
-          Get-Content .kubernetes/grafana-sql-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-sql-auth-secret.tmp.yaml;
-          kubectl apply -f .kubernetes/grafana-sql-auth-secret.tmp.yaml;
-          if ($LastExitCode -ne 0) 
-          { 
-              throw "error";
+          $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
+
+          if (-not $env:SQL_SECRET_EXISTS)
+          {
+              Get-Content .kubernetes/grafana-sql-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-sql-auth-secret.tmp.yaml;
+              kubectl apply -f .kubernetes/grafana-sql-auth-secret.tmp.yaml;
+              if ($LastExitCode -ne 0) 
+              { 
+                  throw "error";
+              }
           }
 
           Get-Content .kubernetes/grafana-admin-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-admin-auth-secret.tmp.yaml;
