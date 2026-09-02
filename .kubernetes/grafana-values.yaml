@@ -104,9 +104,9 @@ extraVolumeMounts:
     mountPath: /var/tmp
 
 extraSecretMounts:
-  - name: db-auth
-    secretName: grafana-db-auth
-    mountPath: /etc/db/auth
+  - name: sql-auth
+    secretName: grafana-sql-auth
+    mountPath: /etc/sql/auth
     readOnly: true
   - name: smtp-auth
     secretName: resend-auth
@@ -133,8 +133,8 @@ grafana.ini:
     host: %SQL_HOST%
     port: %SQL_PORT%
     name: %SQL_NAME%
-    user: $__file{/etc/db/auth/username}
-    password: $__file{/etc/db/auth/password}
+    user: $__file{/etc/sql/auth/username}
+    password: $__file{/etc/sql/auth/password}
     isolation_level: READ-UNCOMMITTED
     ssl_mode: skip-verify
   analytics:
@@ -148,14 +148,14 @@ grafana.ini:
     allow_sign_up: false
   auth.anonymous:
     enabled: false
-  smtp:
-    enabled: true
-    skip_verify: false
-    host: $__file{/etc/smtp/auth/host}
-    from_name: $__file{/etc/smtp/auth/sender-name}
-    from_address: $__file{/etc/smtp/auth/sender-email}
-    user: $__file{/etc/smtp/auth/username}
-    password: $__file{/etc/smtp/auth/apikey}
+  # smtp:
+  #   enabled: true
+  #   skip_verify: false
+  #   host: $__file{/etc/smtp/auth/host}
+  #   from_name: $__file{/etc/smtp/auth/sender-name}
+  #   from_address: $__file{/etc/smtp/auth/sender-email}
+  #   user: $__file{/etc/smtp/auth/username}
+  #   password: $__file{/etc/smtp/auth/apikey}
 
 sidecar:
   resources:
