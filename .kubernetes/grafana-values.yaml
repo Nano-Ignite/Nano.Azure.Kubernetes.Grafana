@@ -105,8 +105,12 @@ extraVolumeMounts:
 
 extraSecretMounts:
   - name: sql-auth
-    secretName: grafana-sql-auth
+    secretName: %APP_NAME%-sql-auth
     mountPath: /etc/sql/auth
+    readOnly: true
+  - name: sql-ca-cert
+    secretName: %APP_NAME%-sql-ca-cert
+    mountPath: /etc/sql/certs
     readOnly: true
   # - name: smtp-auth
   #   secretName: resend-auth
@@ -136,6 +140,7 @@ grafana.ini:
     user: $__file{/etc/sql/auth/username}
     password: $__file{/etc/sql/auth/password}
     ssl_mode: %SQL_SSL_MODE%
+    ca_cert_path: /etc/sql/certs/ca.pem
   analytics:
     reporting_enabled: false
     check_for_updates: false

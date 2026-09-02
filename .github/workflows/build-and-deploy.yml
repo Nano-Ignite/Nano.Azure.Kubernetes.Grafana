@@ -154,6 +154,17 @@ jobs:
               }
           }
 
+          Invoke-WebRequest -Uri "https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem" -OutFile "digicert-global-root-g2.pem";
+          $env:SQL_CA_CERT_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("digicert-global-root-g2.pem"));
+
+          Get-Content .kubernetes/grafana-sql-ca-cert-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-sql-ca-cert-secret.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-sql-ca-cert-secret.tmp.yaml;
+
+          if ($LastExitCode -ne 0)
+          {
+              throw "error";
+          }
+
           Get-Content .kubernetes/grafana-admin-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-admin-auth-secret.tmp.yaml;
           kubectl apply -f .kubernetes/grafana-admin-auth-secret.tmp.yaml;
           if ($LastExitCode -ne 0) 
