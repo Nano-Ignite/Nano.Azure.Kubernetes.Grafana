@@ -1,0 +1,294 @@
+name: Build and Deploy
+on:
+  pull_request:
+    branches:
+      - main 
+  push:
+    branches:
+      - main 
+  workflow_dispatch:
+env:
+  APP_NAME: grafana
+  VERSION: '${{ vars.VERSION }}.${{ github.run_number }}.${{ github.run_attempt }}'
+  CHART_VERSION: 12.7.1
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }} 
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }} 
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }} 
+  AZURE_GROUP_KUBERNETES: ${{ vars.AZURE_RESOURCE_GROUP_KUBERNETES }} 
+  AZURE_GROUP_DATABASE: ${{ vars.AZURE_RESOURCE_GROUP_DATABASE }} 
+  AZURE_GROUP_DNS: ${{ vars.AZURE_RESOURCE_GROUP_DNS }} 
+  AZURE_SUBSCRIPTION_ID: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_AZURE_SUBSCRIPTION_ID || secrets.STAGING_AZURE_SUBSCRIPTION_ID }}
+  KUBERNETES_NODEPOOL_COMPUTE: cpu
+  KUBERNETES_NAMESPACE: ${{ vars.KUBERNETES_NAMESPACE }}
+  KUBERNETES_REPLICA_COUNT: ${{ github.ref == 'refs/heads/main' && 3 || 2 }}  
+  KUBERNETES_MEMORY_REQUEST: 384Mi
+  KUBERNETES_MEMORY_LIMIT: 1152Mi 
+  KUBERNETES_CPU_REQUEST: 100m
+  KUBERNETES_CPU_LIMIT: 300m
+  GRAFANA_ADMIN_USERNAME: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_USERNAME || secrets.STAGING_GRAFANA_ADMIN_USERNAME }}
+  GRAFANA_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_PASSWORD || secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
+  SQL_TYPE: mysql
+  SQL_NAME: grafana
+  SQL_USER: grafana-user
+  SUB_DOMAIN_NAME: grafana
+jobs:
+  build-and-deploy:
+    runs-on:
+      - self-hosted
+      - linux 
+      - ${{ github.ref == 'refs/heads/main' && 'Production' || 'Staging' }}
+    permissions:
+      contents: write
+    concurrency:
+      group: ${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Azure Login
+        shell: pwsh
+        run: |
+          az login --service-principal -u $env:AZURE_CLIENT_ID -p $env:AZURE_CLIENT_SECRET --tenant $env:AZURE_TENANT_ID -o none;
+          az account set -s $env:AZURE_SUBSCRIPTION_ID -o none;
+
+          $env:KUBERNETES_CLUSTER = az aks list -g $env:AZURE_GROUP_KUBERNETES --query [0].name -o tsv;
+          az aks get-credentials -g $env:AZURE_GROUP_KUBERNETES -n $env:KUBERNETES_CLUSTER -o none;
+
+      - name: Initialize MySQL Database
+        if: env.SQL_TYPE == 'mysql'
+        shell: pwsh
+        run: |
+          $serverInfo = az mysql flexible-server show -g $env:AZURE_GROUP_DATABASE -n $env:APP_NAME --query "{host:fullyQualifiedDomainName, port:databasePort}" -o json | ConvertFrom-Json;
+          $env:SQL_HOST = $serverInfo.host;
+          $env:SQL_PORT = $serverInfo.port;
+          $env:SQL_ADMIN_USER = az mysql flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:APP_NAME --query "[0].login" -o tsv;
+          $env:MYSQL_PWD = az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv;
+
+          $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
+
+          if (-not $env:SQL_SECRET_EXISTS)
+          {
+              $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
+              $syncStatement = "ALTER USER '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD';";
+          }
+          else
+          {
+              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.SQL_PASSWORD}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
+              $syncStatement = "";
+          }
+
+          echo "::add-mask::$env:SQL_PASSWORD";
+
+          mysql `
+              --host $env:SQL_HOST `
+              --port $env:SQL_PORT `
+              --user $env:SQL_ADMIN_USER `
+              --enable-cleartext-plugin `
+              -e "CREATE DATABASE IF NOT EXISTS ``$env:SQL_NAME``; CREATE USER IF NOT EXISTS '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD'; $syncStatement GRANT ALL PRIVILEGES ON ``$env:SQL_NAME``.* TO '$env:SQL_USER'@'%'; FLUSH PRIVILEGES;";
+
+          echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
+          echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
+          echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
+
+      - name: Initialize PostgreSQL Database
+        if: env.SQL_TYPE == 'postgresql'
+        shell: pwsh
+        run: |
+          $env:SQL_HOST = az postgres flexible-server show -g $env:AZURE_GROUP_DATABASE -n $env:APP_NAME --query fullyQualifiedDomainName -o tsv;
+          $env:SQL_PORT = "5432";
+          $env:SQL_ADMIN_USER = az postgres flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:APP_NAME --query "[0].principalName" -o tsv;
+
+          $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
+
+          if (-not $env:SQL_SECRET_EXISTS)
+          {
+              $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
+              $syncStatement = "ALTER ROLE ""$env:SQL_USER"" WITH PASSWORD '$env:SQL_PASSWORD';";
+          }
+          else
+          {
+              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.SQL_PASSWORD}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
+              $syncStatement = "";
+          }
+
+          echo "::add-mask::$env:SQL_PASSWORD";
+
+          $env:PGHOST = $env:SQL_HOST;
+          $env:PGPORT = $env:SQL_PORT;
+          $env:PGUSER = $env:SQL_ADMIN_USER;
+          $env:PGPASSWORD = az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv;
+          $env:PGSSLMODE = "require";
+
+          $roleSql = @"
+            DO `$do`$
+            BEGIN
+               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$env:SQL_USER') THEN
+                  CREATE ROLE "$env:SQL_USER" LOGIN PASSWORD '$env:SQL_PASSWORD';
+               END IF;
+            END
+            `$do`$;
+            $syncStatement
+          "@;
+
+          psql -d postgres -c $roleSql;
+          psql -d postgres -c "SELECT 'CREATE DATABASE $env:SQL_NAME' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$env:SQL_NAME')\gexec";
+          psql -d postgres -c "ALTER DATABASE $env:SQL_NAME OWNER TO ""$env:SQL_USER"";";
+
+          echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
+          echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
+          echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
+
+      - name: Initialize SQL Server Database
+        if: env.SQL_TYPE == 'sqlserver'
+        shell: pwsh
+        run: |
+          $env:SQL_HOST = "$env:APP_NAME.database.windows.net";
+          $env:SQL_PORT = "1433";
+          $env:SQL_ADMIN_USER = az sql server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:APP_NAME --query "[0].login" -o tsv;
+          $env:SQL_TOKEN = az account get-access-token --resource "https://database.windows.net/" --query accessToken -o tsv;
+
+          $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
+
+          if (-not $env:SQL_SECRET_EXISTS)
+          {
+              $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
+              $syncStatement = "ALTER LOGIN [$env:SQL_USER] WITH PASSWORD = '$env:SQL_PASSWORD';";
+          }
+          else
+          {
+              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.SQL_PASSWORD}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
+              $syncStatement = "";
+          }
+
+          echo "::add-mask::$env:SQL_PASSWORD";
+
+          Install-Module -Name SqlServer -Scope CurrentUser -Force -AllowClobber;
+
+          $masterSql = @"
+            IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = '$env:SQL_USER')
+            BEGIN
+                CREATE LOGIN [$env:SQL_USER] WITH PASSWORD = '$env:SQL_PASSWORD';
+            END
+            $syncStatement
+
+            IF DB_ID('$env:SQL_NAME') IS NULL
+            BEGIN
+                CREATE DATABASE [$env:SQL_NAME];
+            END
+          "@;
+
+          Invoke-Sqlcmd -ServerInstance $env:SQL_HOST -Database "master" -AccessToken $env:SQL_TOKEN -Query $masterSql;
+
+          $dbSql = @"
+            IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$env:SQL_USER')
+            BEGIN
+                CREATE USER [$env:SQL_USER] FOR LOGIN [$env:SQL_USER];
+            END
+            ALTER ROLE db_datareader ADD MEMBER [$env:SQL_USER];
+            ALTER ROLE db_datawriter ADD MEMBER [$env:SQL_USER];
+            ALTER ROLE db_ddladmin ADD MEMBER [$env:SQL_USER];
+          "@;
+
+          Invoke-Sqlcmd -ServerInstance $env:SQL_HOST -Database $env:SQL_NAME -AccessToken $env:SQL_TOKEN -Query $dbSql;
+
+          echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
+          echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
+          echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
+
+      - name: Deploy Grafana
+        shell: pwsh
+        run: |
+          $zoneNames = az network dns zone list -g $env:AZURE_GROUP_DNS --query "[].name" -o json | ConvertFrom-Json;
+
+          $env:ROUTE_HOST_NAMES = (
+              $zoneNames | ForEach-Object {
+                  "  - $env:SUB_DOMAIN_NAME.$_"
+              }
+          ) -join "`n";
+
+          $env:GATEWAY_NAME = kubectl get gateway -n $env:KUBERNETES_NAMESPACE -o jsonpath='{.items[0].metadata.name}';
+
+          Get-Content .kubernetes/grafana-sql-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-sql-auth-secret.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-sql-auth-secret.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-admin-auth-secret.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-admin-auth-secret.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-admin-auth-secret.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-values.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-values.tmp.yaml;
+          helm upgrade --install $env:APP_NAME oci://ghcr.io/grafana-community/helm-charts/grafana --namespace $env:KUBERNETES_NAMESPACE --version $env:CHART_VERSION -f .kubernetes/grafana-values.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-httproute-80.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-httproute-80.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-httproute-80.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-httproute-443.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-httproute-443.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-httproute-443.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-service-monitor.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-service-monitor.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-service-monitor.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+          Get-Content .kubernetes/grafana-healthcheck-policy.yaml | foreach { [Environment]::ExpandEnvironmentVariables($_) } | Set-Content .kubernetes/grafana-healthcheck-policy.tmp.yaml;
+          kubectl apply -f .kubernetes/grafana-healthcheck-policy.tmp.yaml;
+          if ($LastExitCode -ne 0) 
+          { 
+              throw "error";
+          }
+
+      - name: Update Azure Policies
+        shell: pwsh
+        run: |
+          $ports = @("3000");
+
+          $currentPorts = @(az policy assignment show -n SecurityCenterBuiltIn --scope "/subscriptions/$env:AZURE_SUBSCRIPTION_ID" --query "parameters.allowedservicePortsInKubernetesClusterPorts.value[]" -o tsv | Where-Object { $_ -ne "-1" })
+          $missingPorts = @($ports | Where-Object { $currentPorts -notcontains $_ })
+
+          if ($missingPorts.Count -gt 0) {
+              $mergedPorts = @(($currentPorts + $missingPorts) | Select-Object -Unique)
+
+              $allParams = az policy assignment show -n SecurityCenterBuiltIn --scope "/subscriptions/$env:AZURE_SUBSCRIPTION_ID" --query "parameters" -o json | ConvertFrom-Json;
+              $allParams.allowedservicePortsInKubernetesClusterPorts.value = $mergedPorts;
+
+              $params = $allParams | ConvertTo-Json -Compress -Depth 100;
+
+              az policy assignment update `
+                  -n SecurityCenterBuiltIn `
+                  --scope "/subscriptions/$env:AZURE_SUBSCRIPTION_ID" `
+                  --params $params;
+          }
+
+      - name: GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ env.VERSION }}
+          name: "Release ${{ env.VERSION }}"
+          body: |
+            Version: ${{ env.VERSION }}
+            Commit: ${{ github.sha }}
+            Build run: ${{ github.run_number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
