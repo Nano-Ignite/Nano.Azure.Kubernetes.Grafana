@@ -97,11 +97,10 @@ jobs:
           $env:SQL_SERVER = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].name -o tsv;
           $env:SQL_HOST = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].fullyQualifiedDomainName -o tsv;
           $env:SQL_PORT = "5432";
-          $env:SQL_ADMIN_USER = az postgres flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:SQL_SERVER --query "[0].principalName" -o tsv;
 
           $env:PGHOST = $env:SQL_HOST;
           $env:PGPORT = $env:SQL_PORT;
-          $env:PGUSER = $env:SQL_ADMIN_USER;
+          $env:PGUSER = az postgres flexible-server microsoft-entra-admin list -g $env:AZURE_GROUP_DATABASE -s $env:SQL_SERVER --query "[0].principalName" -o tsv;
           $env:PGPASSWORD = az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv;
           $env:PGSSLMODE = "require";
 
