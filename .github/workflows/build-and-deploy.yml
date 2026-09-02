@@ -94,13 +94,14 @@ jobs:
         if: env.SQL_TYPE == 'postgres'
         shell: pwsh
         run: |
+          $env:SQL_SERVER = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].name -o tsv;
+          $env:SQL_HOST = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].fullyQualifiedDomainName -o tsv;
+          $env:SQL_PORT = "5432";
+
           $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
 
           if (-not $env:SQL_SECRET_EXISTS)
           {
-              $env:SQL_SERVER = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].name -o tsv;
-              $env:SQL_HOST = az postgres flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].fullyQualifiedDomainName -o tsv;
-              $env:SQL_PORT = "5432";
               $env:SQL_ADMIN_USER = az postgres flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:SQL_SERVER --query "[0].principalName" -o tsv;
               $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
 
@@ -126,10 +127,11 @@ jobs:
               psql -d postgres -c "SELECT 'CREATE DATABASE $env:SQL_NAME' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$env:SQL_NAME')\gexec";
               psql -d postgres -c "ALTER DATABASE $env:SQL_NAME OWNER TO ""$env:SQL_USER"";";
 
-              echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
-              echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
               echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
           }
+
+          echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
+          echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
 
       - name: Deploy Grafana
         shell: pwsh
