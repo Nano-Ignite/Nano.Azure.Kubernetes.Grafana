@@ -135,7 +135,6 @@ grafana.ini:
     name: %SQL_NAME%
     user: $__file{/etc/sql/auth/username}
     password: $__file{/etc/sql/auth/password}
-    isolation_level: READ-UNCOMMITTED
     ssl_mode: %SQL_SSL_MODE%
   analytics:
     reporting_enabled: false

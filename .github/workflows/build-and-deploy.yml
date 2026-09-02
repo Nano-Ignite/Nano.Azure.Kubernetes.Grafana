@@ -27,7 +27,7 @@ env:
   KUBERNETES_CPU_LIMIT: 300m
   GRAFANA_ADMIN_USERNAME: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_USERNAME || secrets.STAGING_GRAFANA_ADMIN_USERNAME }}
   GRAFANA_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_PASSWORD || secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
-  SQL_TYPE: postgres
+  SQL_TYPE: mysql
   SQL_NAME: grafana
   SQL_USER: grafana-user
   SUB_DOMAIN_NAME: grafana
@@ -58,11 +58,12 @@ jobs:
         if: env.SQL_TYPE == 'mysql'
         shell: pwsh
         run: |
-          $serverInfo = az mysql flexible-server show -g $env:AZURE_GROUP_DATABASE -n $env:APP_NAME --query "{host:fullyQualifiedDomainName, port:databasePort}" -o json | ConvertFrom-Json;
-          $env:SQL_HOST = $serverInfo.host;
-          $env:SQL_PORT = $serverInfo.port;
+          $env:SQL_SERVER = az mysql flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].name -o tsv;
+          $env:SQL_HOST = az mysql flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].fullyQualifiedDomainName -o tsv;
+          $env:SQL_PORT = az mysql flexible-server list -g $env:AZURE_GROUP_DATABASE --query [0].databasePort -o tsv;
           $env:SQL_SSL_MODE = "skip-verify";
-          $env:SQL_ADMIN_USER = az mysql flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:APP_NAME --query "[0].login" -o tsv;
+          $env:SQL_ADMIN_USER = az mysql flexible-server ad-admin list -g $env:AZURE_GROUP_DATABASE -s $env:SQL_SERVER --query "[0].login" -o tsv;
+
           $env:MYSQL_PWD = az account get-access-token --resource-type oss-rdbms --query accessToken -o tsv;
 
           $env:SQL_SECRET_EXISTS = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE --ignore-not-found -o name;
@@ -70,26 +71,28 @@ jobs:
           if (-not $env:SQL_SECRET_EXISTS)
           {
               $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
-              $syncStatement = "ALTER USER '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD';";
-          }
-          else
-          {
-              $env:SQL_PASSWORD = kubectl get secret "$env:APP_NAME-sql-auth" -n $env:KUBERNETES_NAMESPACE -o jsonpath="{.data.SQL_PASSWORD}" | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) };
-              $syncStatement = "";
-          }
+              echo "::add-mask::$env:SQL_PASSWORD";
 
-          echo "::add-mask::$env:SQL_PASSWORD";
+              mysql `
+                  --host $env:SQL_HOST `
+                  --port $env:SQL_PORT `
+                  --user $env:SQL_ADMIN_USER `
+                  --enable-cleartext-plugin `
+                  -e "CREATE USER IF NOT EXISTS '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD'; ALTER USER '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD'; FLUSH PRIVILEGES;";
+
+              echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
+          }
 
           mysql `
               --host $env:SQL_HOST `
               --port $env:SQL_PORT `
               --user $env:SQL_ADMIN_USER `
               --enable-cleartext-plugin `
-              -e "CREATE DATABASE IF NOT EXISTS ``$env:SQL_NAME``; CREATE USER IF NOT EXISTS '$env:SQL_USER'@'%' IDENTIFIED BY '$env:SQL_PASSWORD'; $syncStatement GRANT ALL PRIVILEGES ON ``$env:SQL_NAME``.* TO '$env:SQL_USER'@'%'; FLUSH PRIVILEGES;";
+              -e "CREATE DATABASE IF NOT EXISTS ``$env:SQL_NAME``; GRANT ALL PRIVILEGES ON ``$env:SQL_NAME``.* TO '$env:SQL_USER'@'%'; FLUSH PRIVILEGES;";
 
           echo "SQL_HOST=$env:SQL_HOST" >> $env:GITHUB_ENV;
           echo "SQL_PORT=$env:SQL_PORT" >> $env:GITHUB_ENV;
-          echo "SQL_PASSWORD=$env:SQL_PASSWORD" >> $env:GITHUB_ENV;
+          echo "SQL_SSL_MODE=$env:SQL_SSL_MODE" >> $env:GITHUB_ENV;
 
       - name: Initialize PostgreSQL Database
         if: env.SQL_TYPE == 'postgres'
@@ -111,7 +114,6 @@ jobs:
           if (-not $env:SQL_SECRET_EXISTS)
           {
               $env:SQL_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | % { [char]$_ });
-
               echo "::add-mask::$env:SQL_PASSWORD";
 
               $roleSql = @"
