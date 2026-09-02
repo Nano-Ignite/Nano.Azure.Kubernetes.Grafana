@@ -27,7 +27,7 @@ env:
   KUBERNETES_CPU_LIMIT: 300m
   GRAFANA_ADMIN_USERNAME: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_USERNAME || secrets.STAGING_GRAFANA_ADMIN_USERNAME }}
   GRAFANA_ADMIN_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.PRODUCTION_GRAFANA_ADMIN_PASSWORD || secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
-  SQL_TYPE: mysql
+  SQL_TYPE: postgres
   SQL_NAME: grafana
   SQL_USER: grafana-user
   SUB_DOMAIN_NAME: grafana
